@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-    
+
 import tensorflow as tf
 import numpy as np
 import glob, time, os
@@ -8,6 +8,7 @@ from network import Network
 from data import Data
 from config import directories
 from utils import Utils
+
 
 class Model():
     def __init__(self, config, paths, dataset, name='gan_compression', evaluate=False):
@@ -20,12 +21,19 @@ class Model():
         self.handle = tf.placeholder(tf.string, shape=[])
         self.training_phase = tf.placeholder(tf.bool)
 
+        # Basis table
+        C = config.channel_bottleneck
+        factor = 16
+        H, W = 512 // factor, 1024 // factor
+        self.basis = tf.Variable(tf.random_normal([H * W, H, W, C], stddev=0.01), trainable=True)  # HW x H x W x C
+        self.beta = tf.Variable(tf.random_normal([H, W, C], stddev=0.01), trainable=True)
+
         # >>> Data handling
         self.path_placeholder = tf.placeholder(paths.dtype, paths.shape)
-        self.test_path_placeholder = tf.placeholder(paths.dtype)            
+        self.test_path_placeholder = tf.placeholder(paths.dtype)
 
         self.semantic_map_path_placeholder = tf.placeholder(paths.dtype, paths.shape)
-        self.test_semantic_map_path_placeholder = tf.placeholder(paths.dtype)  
+        self.test_semantic_map_path_placeholder = tf.placeholder(paths.dtype)
 
         train_dataset = Data.load_dataset(self.path_placeholder,
                                           config.batch_size,
@@ -43,8 +51,8 @@ class Model():
                                          test=True)
 
         self.iterator = tf.data.Iterator.from_string_handle(self.handle,
-                                                                    train_dataset.output_types,
-                                                                    train_dataset.output_shapes)
+                                                            train_dataset.output_types,
+                                                            train_dataset.output_shapes)
 
         self.train_iterator = train_dataset.make_initializable_iterator()
         self.test_iterator = test_dataset.make_initializable_iterator()
@@ -57,23 +65,37 @@ class Model():
         # Global generator: Encode -> quantize -> reconstruct
         # =======================================================================================================>>>
         with tf.variable_scope('generator'):
-            self.feature_map = Network.encoder(self.example, config, self.training_phase, config.channel_bottleneck)
-            self.w_hat = Network.quantizer(self.feature_map, config)
+            self.coefficients = Network.encoder(self.example, config, self.training_phase)  # B x H x W x 1
+            self.coe_hat = Network.quantizer(self.coefficients, config)
+            self.coe_hat_flat = tf.contrib.layers.flatten(self.coe_hat)  # B x HW
+            self.coe_hat_flat2 = tf.expand_dims(tf.expand_dims(tf.expand_dims(self.coe_hat_flat, -1), -1), -1)  # B x HW x 1 x 1 x 1
 
-            if config.use_conditional_GAN:
-                self.semantic_feature_map = Network.encoder(self.semantic_map, config, self.training_phase, 
-                    config.channel_bottleneck, scope='semantic_map')
-                self.w_hat_semantic = Network.quantizer(self.semantic_feature_map, config, scope='semantic_map')
+            self.lin_com_tmp = tf.multiply(self.coe_hat_flat2, self.basis)  # B x HW x H x W x C
+            self.lin_com = tf.reduce_sum(self.lin_com_tmp, axis=1)  # B x H x W x C
+            self.w_hat = tf.add(self.lin_com, self.beta)  # B x H x W x C
 
-                self.w_hat = tf.concat([self.w_hat, self.w_hat_semantic], axis=-1)
+            print('coe: ', self.coefficients.get_shape().as_list())
+            print('coe_flat2: ', self.coe_hat_flat2.get_shape().as_list())
+            print('lin_com_tmp: ', self.lin_com_tmp.get_shape().as_list())
+            print('lin_com: ', self.lin_com.get_shape().as_list())
+            print('w_hat: ', self.w_hat.get_shape().as_list())
+
+            # if config.use_conditional_GAN:
+            #     self.semantic_feature_map = Network.encoder(self.semantic_map, config, self.training_phase,
+            #         config.channel_bottleneck, scope='semantic_map')
+            #     self.w_hat_semantic = Network.quantizer(self.semantic_feature_map, config, scope='semantic_map')
+            #
+            #     self.w_hat = tf.concat([self.w_hat, self.w_hat_semantic], axis=-1)
 
             if config.sample_noise is True:
                 print('Sampling noise...')
                 # noise_prior = tf.contrib.distributions.Uniform(-1., 1.)
                 # self.noise_sample = noise_prior.sample([tf.shape(self.example)[0], config.noise_dim])
-                noise_prior = tf.contrib.distributions.MultivariateNormalDiag(loc=tf.zeros([config.noise_dim]), scale_diag=tf.ones([config.noise_dim]))
+                noise_prior = tf.contrib.distributions.MultivariateNormalDiag(loc=tf.zeros([config.noise_dim]),
+                                                                              scale_diag=tf.ones([config.noise_dim]))
                 v = noise_prior.sample(tf.shape(self.example)[0])
-                Gv = Network.dcgan_generator(v, config, self.training_phase, C=config.channel_bottleneck, upsample_dim=config.upsample_dim)
+                Gv = Network.dcgan_generator(v, config, self.training_phase, C=config.channel_bottleneck,
+                                             upsample_dim=config.upsample_dim)
                 self.z = tf.concat([self.w_hat, Gv], axis=-1)
             else:
                 self.z = self.w_hat
@@ -95,26 +117,29 @@ class Model():
             self.reconstruction = tf.concat([self.reconstruction, self.semantic_map], axis=-1)
 
         if config.multiscale:
-            D_x, D_x2, D_x4, *Dk_x = Network.multiscale_discriminator(self.example, config, self.training_phase, 
-                use_sigmoid=config.use_vanilla_GAN, mode='real')
-            D_Gz, D_Gz2, D_Gz4, *Dk_Gz = Network.multiscale_discriminator(self.reconstruction, config, self.training_phase, 
-                use_sigmoid=config.use_vanilla_GAN, mode='reconstructed', reuse=True)
+            D_x, D_x2, D_x4, *Dk_x = Network.multiscale_discriminator(self.example, config, self.training_phase,
+                                                                      use_sigmoid=config.use_vanilla_GAN, mode='real')
+            D_Gz, D_Gz2, D_Gz4, *Dk_Gz = Network.multiscale_discriminator(self.reconstruction, config,
+                                                                          self.training_phase,
+                                                                          use_sigmoid=config.use_vanilla_GAN,
+                                                                          mode='reconstructed', reuse=True)
         else:
             D_x = Network.discriminator(self.example, config, self.training_phase, use_sigmoid=config.use_vanilla_GAN)
-            D_Gz = Network.discriminator(self.reconstruction, config, self.training_phase, use_sigmoid=config.use_vanilla_GAN, reuse=True)
-         
-        # Loss terms 
+            D_Gz = Network.discriminator(self.reconstruction, config, self.training_phase,
+                                         use_sigmoid=config.use_vanilla_GAN, reuse=True)
+
+        # Loss terms
         # =======================================================================================================>>>
         if config.use_vanilla_GAN is True:
             # Minimize JS divergence
             D_loss_real = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=D_x,
-                labels=tf.ones_like(D_x)))
+                                                                                        labels=tf.ones_like(D_x)))
             D_loss_gen = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=D_Gz,
-                labels=tf.zeros_like(D_Gz)))
+                                                                                       labels=tf.zeros_like(D_Gz)))
             self.D_loss = D_loss_real + D_loss_gen
             # G_loss = max log D(G(z))
             self.G_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=D_Gz,
-                labels=tf.ones_like(D_Gz)))
+                                                                                        labels=tf.ones_like(D_Gz)))
         else:
             # Minimize $\chi^2$ divergence
             self.D_loss = tf.reduce_mean(tf.square(D_x - 1.)) + tf.reduce_mean(tf.square(D_Gz))
@@ -129,10 +154,10 @@ class Model():
 
         if config.use_feature_matching_loss:  # feature extractor for generator
             D_x_layers, D_Gz_layers = [j for i in Dk_x for j in i], [j for i in Dk_Gz for j in i]
-            feature_matching_loss = tf.reduce_sum([tf.reduce_mean(tf.abs(Dkx-Dkz)) for Dkx, Dkz in zip(D_x_layers, D_Gz_layers)])
+            feature_matching_loss = tf.reduce_sum(
+                [tf.reduce_mean(tf.abs(Dkx - Dkz)) for Dkx, Dkz in zip(D_x_layers, D_Gz_layers)])
             self.G_loss += config.feature_matching_weight * feature_matching_loss
 
-        
         # Optimization
         # =======================================================================================================>>>
         G_opt = tf.train.AdamOptimizer(learning_rate=config.G_learning_rate, beta1=0.5)
@@ -156,9 +181,9 @@ class Model():
         D_ema = tf.train.ExponentialMovingAverage(decay=config.ema_decay, num_updates=self.D_global_step)
         D_maintain_averages_op = D_ema.apply(theta_D)
 
-        with tf.control_dependencies(G_update_ops+[self.G_opt_op]):
+        with tf.control_dependencies(G_update_ops + [self.G_opt_op]):
             self.G_train_op = tf.group(G_maintain_averages_op)
-        with tf.control_dependencies(D_update_ops+[self.D_opt_op]):
+        with tf.control_dependencies(D_update_ops + [self.D_opt_op]):
             self.D_train_op = tf.group(D_maintain_averages_op)
 
         # >>> Monitoring
@@ -170,13 +195,14 @@ class Model():
             tf.summary.scalar('feature_matching_loss', feature_matching_loss)
         tf.summary.scalar('G_global_step', self.G_global_step)
         tf.summary.scalar('D_global_step', self.D_global_step)
-        tf.summary.image('real_images', self.example[:,:,:,:3], max_outputs=4)
-        tf.summary.image('compressed_images', self.reconstruction[:,:,:,:3], max_outputs=4)
+        tf.summary.image('real_images', self.example[:, :, :, :3], max_outputs=4)
+        tf.summary.image('compressed_images', self.reconstruction[:, :, :, :3], max_outputs=4)
         if config.use_conditional_GAN:
             tf.summary.image('semantic_map', self.semantic_map, max_outputs=4)
         self.merge_op = tf.summary.merge_all()
 
         self.train_writer = tf.summary.FileWriter(
-            os.path.join(directories.tensorboard, '{}_train_{}'.format(name, time.strftime('%d-%m_%I:%M'))), graph=tf.get_default_graph())
+            os.path.join(directories.tensorboard, '{}_train_{}'.format(name, time.strftime('%d-%m_%I:%M'))),
+            graph=tf.get_default_graph())
         self.test_writer = tf.summary.FileWriter(
             os.path.join(directories.tensorboard, '{}_test_{}'.format(name, time.strftime('%d-%m_%I:%M'))))

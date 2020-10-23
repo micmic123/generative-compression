@@ -7,9 +7,9 @@ from utils import Utils
 class Network(object):
 
     @staticmethod
-    def encoder(x, config, training, C, reuse=False, actv=tf.nn.relu, scope='image'):
+    def encoder(x, config, training, C=None, reuse=False, actv=tf.nn.relu, scope='image'):
         """
-        Process image x ([512,1024]) into a feature map of size W/16 x H/16 x C
+        Process image x ([512,1024]) into a feature map of size H/16 x W/16 x C
          + C:       Bottleneck depth, controls bpp
          + Output:  Projection onto C channels, C = {2,4,8,16}
         """
@@ -40,9 +40,9 @@ class Network(object):
             # Project channels onto space w/ dimension C
             # Feature maps have dimension W/16 x H/16 x C
             out = tf.pad(out, [[0, 0], [1, 1], [1, 1], [0, 0]], 'REFLECT')
-            feature_map = conv_block(out, filters=C, kernel_size=3, strides=1, padding='VALID', actv=actv)
+            coefficients = conv_block(out, filters=1, kernel_size=3, strides=1, padding='VALID', actv=actv)  # H/16 x W/16 x 1
             
-            return feature_map
+            return coefficients
 
 
     @staticmethod
