@@ -9,6 +9,7 @@ class Data(object):
     @staticmethod
     def load_dataframe(filename, load_semantic_maps=False):
         df = pd.read_hdf(filename, key='df').sample(frac=1).reset_index(drop=True)
+        print(df)
 
         if load_semantic_maps:
             return df['path'].values, df['semantic_map_path'].values
@@ -75,7 +76,7 @@ class Data(object):
 
         dataset = dataset.shuffle(buffer_size=8)
         dataset = dataset.map(_parser)
-        dataset = dataset.cache()
+        # dataset = dataset.cache()
         dataset = dataset.batch(batch_size)
 
         if test:

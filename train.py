@@ -13,6 +13,7 @@ from model import Model
 from config import config_train, directories
 
 tf.logging.set_verbosity(tf.logging.ERROR)
+os.environ['CUDA_VISIBLE_DEVICES'] = '7'
 
 def train(config, args):
 
