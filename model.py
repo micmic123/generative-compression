@@ -21,12 +21,10 @@ class Model():
         self.handle = tf.placeholder(tf.string, shape=[])
         self.training_phase = tf.placeholder(tf.bool)
 
-        # Basis table
+        # Basis table meta
         C = config.channel_bottleneck
         factor = 16
         H, W = 512 // factor, 1024 // factor
-        self.basis = tf.Variable(tf.random_normal([H * W, H, W, C], stddev=0.01), trainable=True)  # HW x H x W x C
-        self.beta = tf.Variable(tf.random_normal([H, W, C], stddev=0.01), trainable=True)
 
         # >>> Data handling
         self.path_placeholder = tf.placeholder(paths.dtype, paths.shape)
@@ -65,6 +63,10 @@ class Model():
         # Global generator: Encode -> quantize -> reconstruct
         # =======================================================================================================>>>
         with tf.variable_scope('generator'):
+            # Basis table
+            self.basis = tf.Variable(tf.random_normal([H * W, H, W, C], stddev=0.01), trainable=True)  # HW x H x W x C
+            self.beta = tf.Variable(tf.random_normal([H, W, C], stddev=0.01), trainable=True)
+
             self.coefficients = Network.encoder(self.example, config, self.training_phase)  # B x H x W x 1
             self.coe_hat = Network.quantizer(self.coefficients, config)
             self.coe_hat_flat = tf.contrib.layers.flatten(self.coe_hat)  # B x HW

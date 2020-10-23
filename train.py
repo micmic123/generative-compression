@@ -13,10 +13,10 @@ from model import Model
 from config import config_train, directories
 
 tf.logging.set_verbosity(tf.logging.ERROR)
-os.environ['CUDA_VISIBLE_DEVICES'] = '7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+
 
 def train(config, args):
-
     start_time = time.time()
     G_loss_best, D_loss_best = float('inf'), float('inf')
     ckpt = tf.train.get_checkpoint_state(directories.checkpoints)
@@ -36,7 +36,7 @@ def train(config, args):
     saver = tf.train.Saver()
 
     if config.use_conditional_GAN:
-        feed_dict_test_init = {gan.test_path_placeholder: test_paths, 
+        feed_dict_test_init = {gan.test_path_placeholder: test_paths,
                                gan.test_semantic_map_path_placeholder: test_semantic_map_paths}
         feed_dict_train_init = {gan.path_placeholder: paths,
                                 gan.semantic_map_path_placeholder: semantic_map_paths}
@@ -68,7 +68,7 @@ def train(config, args):
 
             # Run diagnostics
             G_loss_best, D_loss_best = Utils.run_diagnostics(gan, config, directories, sess, saver, train_handle,
-                start_time, epoch, args.name, G_loss_best, D_loss_best)
+                                                             start_time, epoch, args.name, G_loss_best, D_loss_best)
 
             while True:
                 try:
@@ -81,11 +81,17 @@ def train(config, args):
                     step, _ = sess.run([gan.D_global_step, gan.D_train_op], feed_dict=feed_dict)
 
                     if step % config.diagnostic_steps == 0:
-                        G_loss_best, D_loss_best = Utils.run_diagnostics(gan, config, directories, sess, saver, train_handle,
-                            start_time, epoch, args.name, G_loss_best, D_loss_best)
+                        G_loss_best, D_loss_best = Utils.run_diagnostics(gan, config, directories, sess, saver,
+                                                                         train_handle,
+                                                                         start_time, epoch, args.name, G_loss_best,
+                                                                         D_loss_best)
                         Utils.single_plot(epoch, step, sess, gan, train_handle, args.name, config)
                         # for _ in range(4):
                         #    sess.run(gan.G_train_op, feed_dict=feed_dict)
+
+                    # if step % 10 == 0:
+                    #     print('[basis] ', sess.run(gan.basis[0, 0, 0]))
+                    #     print('[beta] ', sess.run(gan.beta[0, 0]))
 
 
                 except tf.errors.OutOfRangeError:
@@ -94,15 +100,17 @@ def train(config, args):
 
                 except KeyboardInterrupt:
                     save_path = saver.save(sess, os.path.join(directories.checkpoints,
-                        '{}_last.ckpt'.format(args.name)), global_step=epoch)
+                                                              '{}_last.ckpt'.format(args.name)), global_step=epoch)
                     print('Interrupted, model saved to: ', save_path)
                     sys.exit()
 
         save_path = saver.save(sess, os.path.join(directories.checkpoints,
-                               '{}_end.ckpt'.format(args.name)),
+                                                  '{}_end.ckpt'.format(args.name)),
                                global_step=epoch)
 
-    print("Training Complete. Model saved to file: {} Time elapsed: {:.3f} s".format(save_path, time.time()-start_time))
+    print(
+        "Training Complete. Model saved to file: {} Time elapsed: {:.3f} s".format(save_path, time.time() - start_time))
+
 
 def main(**kwargs):
     parser = argparse.ArgumentParser()
@@ -110,11 +118,14 @@ def main(**kwargs):
     parser.add_argument("-r", "--restore_path", help="path to model to be restored", type=str)
     parser.add_argument("-opt", "--optimizer", default="adam", help="Selected optimizer", type=str)
     parser.add_argument("-name", "--name", default="gan-train", help="Checkpoint/Tensorboard label")
-    parser.add_argument("-ds", "--dataset", default="cityscapes", help="choice of training dataset. Currently only supports cityscapes/ADE20k", choices=set(("cityscapes", "ADE20k")), type=str)
+    parser.add_argument("-ds", "--dataset", default="cityscapes",
+                        help="choice of training dataset. Currently only supports cityscapes/ADE20k",
+                        choices=set(("cityscapes", "ADE20k")), type=str)
     args = parser.parse_args()
 
     # Launch training
     train(config_train, args)
+
 
 if __name__ == '__main__':
     main()
